@@ -216,7 +216,7 @@ else:
         with t5:
             st.subheader("🔑 Gestión de Usuarios (Master)")
             
-            # Mostrar tabla en tiempo real de los datos del servidor
+            # 1. Mostrar tabla en tiempo real de los datos actuales en el servidor
             usuarios_lista = []
             for correo, info in usuarios_db_global.items():
                 usuarios_lista.append({
@@ -231,18 +231,21 @@ else:
             st.markdown("---")
             st.markdown("#### 🛠️ Modificar Credenciales de un Usuario")
             
-            user_sel = st.selectbox("Seleccionar usuario a editar:", list(usuarios_db_global.keys()))
+            # Selector de usuario
+            user_sel = st.selectbox("Seleccionar usuario a editar:", list(usuarios_db_global.keys()), key="selector_master_usuarios")
             u_data = usuarios_db_global[user_sel]
             
+            # IMPORTANTE: Usamos llaves únicas dinámicas usando el correo del usuario seleccionado (f"..._{user_sel}")
+            # Esto evita por completo que la información "se filtre" o se replique a otros usuarios al cambiar el selector.
             col_u1, col_u2 = st.columns(2)
             with col_u1:
-                n_name = st.text_input("Nombre Completo:", value=u_data["nombre"], key="input_n_name")
-                n_role = st.selectbox("Rol del Sistema:", ["Operador", "Master"], index=0 if u_data["rol"] == "Operador" else 1, key="input_n_role")
+                n_name = st.text_input("Nombre Completo:", value=u_data["nombre"], key=f"name_{user_sel}")
+                n_role = st.selectbox("Rol del Sistema:", ["Operador", "Master"], index=0 if u_data["rol"] == "Operador" else 1, key=f"role_{user_sel}")
             with col_u2:
-                n_pass = st.text_input("Contraseña de Acceso:", value=u_data["password"], key="input_n_pass")
-                n_perm = st.checkbox("Habilitar Permiso de Escritura", value=u_data["permiso_modificar"], key="input_n_perm")
+                n_pass = st.text_input("Contraseña de Acceso:", value=u_data["password"], key=f"pass_{user_sel}")
+                n_perm = st.checkbox("Habilitar Permiso de Escritura", value=u_data["permiso_modificar"], key=f"perm_{user_sel}")
             
-            # --- VENTANA MODAL (DIALOG) DE CONFIRMACIÓN ---
+            # --- VENTANA MODAL (DIALOG) DE CONFIRMACIÓN SEGURA ---
             @st.dialog("⚠️ Confirmar Actualización de Credenciales")
             def confirmar_cambio_modal(usuario, nombre, clave, rol, permiso):
                 st.warning(f"¿Está seguro de que desea aplicar estos cambios globales para **{usuario}**?")
@@ -250,24 +253,24 @@ else:
                 st.write(f"• **Contraseña:** {clave}")
                 st.write(f"• **Rol:** {rol}")
                 st.write(f"• **Escritura:** {'Permitido' if permiso else 'Denegado'}")
-                st.markdown("<small><i>Este cambio desconectará o actualizará el acceso del usuario inmediatamente en cualquier PC.</i></small>", unsafe_allow_html=True)
+                st.markdown("<small><i>Este cambio se aplicará de inmediato en cualquier PC conectada.</i></small>", unsafe_allow_html=True)
                 
                 c_btn1, c_btn2 = st.columns(2)
                 with c_btn1:
-                    if st.button("✅ Sí, Guardar Cambios", use_container_width=True):
-                        # Guardamos en la base de datos compartida del servidor
+                    if st.button("✅ Sí, Guardar Cambios", use_container_width=True, key=f"btn_confirmar_{usuario}"):
+                        # Guardamos de manera aislada y explícita en el diccionario global
                         usuarios_db_global[usuario] = {
-                            "nombre": nombre,
-                            "password": clave,
-                            "rol": rol,
-                            "permiso_modificar": permiso if rol == "Operador" else True
+                            "nombre": str(nombre),
+                            "password": str(clave),
+                            "rol": str(rol),
+                            "permiso_modificar": bool(permiso) if rol == "Operador" else True
                         }
-                        st.toast("¡Usuario guardado en el servidor global!", icon="💾")
+                        st.toast("¡Usuario guardado con éxito!", icon="💾")
                         st.rerun()
                 with c_btn2:
-                    if st.button("❌ Cancelar", use_container_width=True):
+                    if st.button("❌ Cancelar", use_container_width=True, key=f"btn_cancelar_{usuario}"):
                         st.rerun()
 
             # Botón principal que abre la ventana flotante
-            if st.button("🔄 Actualizar Credenciales", use_container_width=True, type="primary"):
+            if st.button("🔄 Actualizar Credenciales", use_container_width=True, type="primary", key=f"btn_trigger_{user_sel}"):
                 confirmar_cambio_modal(user_sel, n_name, n_pass, n_role, n_perm)
