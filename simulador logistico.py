@@ -1,13 +1,16 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 
 # Configuración de la página web
 st.set_page_config(page_title="Simulador Logístico CEDIS", layout="wide")
 
 # --- LÓGICA DEL SIMULADOR (POO) ---
 class Galpon:
-    def __init__(self, id_galpon, categoria_defecto, capacidad_defecto):
+    def __init__(self, id_galpon, categoria_defecto, capacidad_defecto, filas_layout=5, columnas_layout=10):
         self.id_galpon = id_galpon
+        self.filas = filas_layout
+        self.columnas = columnas_layout
         
         # Guardar categoría en el estado de la sesión si no existe
         if f"cat_{id_galpon}" not in st.session_state:
@@ -43,8 +46,7 @@ class Galpon:
 
     @ocupacion_actual.setter
     def ocupacion_actual(self, valor):
-        # Asegurar que la ocupación no supere una nueva capacidad reducida
-        st.session_state[f"galpon_{self.id_galpon}"] = min(valor, self.capacidad_max)
+        st.session_state[f"galpon_{self.id_galpon}"] = min(max(0, valor), self.capacidad_max)
 
     def espacio_disponible(self):
         return max(0, self.capacidad_max - self.ocupacion_actual)
@@ -55,35 +57,43 @@ class Galpon:
             return True
         return False
 
-# Inicialización dinámica de los galpones en memoria/estado de sesión
+# Inicialización dinámica de los galpones
 galpones = [
-    Galpon(1, "Línea Blanca", 500),
-    Galpon(2, "Televisores y Audio", 800),
-    Galpon(3, "Pequeños Electrodomésticos", 1200),
-    Galpon(4, "Tecnología y Gadgets", 1000)
+    Galpon(1, "Línea Blanca", 500, filas_layout=5, columnas_layout=10),      # 50 posiciones de rack
+    Galpon(2, "Televisores y Audio", 800, filas_layout=8, columnas_layout=10), # 80 posiciones de rack
+    Galpon(3, "Pequeños Electrodomésticos", 1200, filas_layout=10, columnas_layout=12), # 120 posiciones
+    Galpon(4, "Tecnología y Gadgets", 1000, filas_layout=10, columnas_layout=10) # 100 posiciones
 ]
 
 # --- INTERFAZ GRÁFICA (STREAMLIT) ---
 st.title("🚢 Sistema de Simulación de Importaciones y CEDIS")
 st.markdown("Gestione el ingreso de mercancía, configure la infraestructura y monitoree los galpones en tiempo real.")
 
-# Panel Lateral: Entrada de Mercancía
+# Panel Lateral: Entrada de Mercancía (REDISEÑADO)
 st.sidebar.header("📥 Entrada de Importaciones")
-# Elige dinámicamente según las categorías vigentes de los galpones
-categorias_vivas = [g.categoria for g in galpones]
-categoria_seleccionada = st.sidebar.selectbox(
-    "Seleccione el tipo de producto que ingresa:",
-    categorias_vivas
-)
-cantidad_ingreso = st.sidebar.number_input("Cantidad de unidades:", min_value=1, max_value=2000, value=150)
+
+# 1. Selección libre del Producto/Categoría
+categorias_existentes = ["Línea Blanca", "Televisores y Audio", "Pequeños Electrodomésticos", "Tecnología y Gadgets", "Otros / Mercancía General"]
+producto_ingreso = st.sidebar.selectbox("1. Tipo de producto que ingresa:", categorias_existentes)
+
+# 2. Selección libre del Galpón de Destino (Independiente del producto)
+lista_galpones_nombres = [f"Galpón {g.id_galpon} ({g.categoria})" for g in galpones]
+galpon_seleccionado_nombre = st.sidebar.selectbox("2. Destino de Almacenamiento:", lista_galpones_nombres)
+id_galpon_destino = int(galpon_seleccionado_nombre.split(" ")[1])
+
+cantidad_ingreso = st.sidebar.number_input("3. Cantidad de unidades:", min_value=1, max_value=2000, value=150)
 
 if st.sidebar.button("Simular Desembarco y Almacenaje"):
-    galpon_destino = next((g for g in galpones if g.categoria == categoria_seleccionada), None)
-    if galpon_destino:
-        if galpon_destino.almacenar(cantidad_ingreso):
-            st.sidebar.success(f"✅ Éxito: Se almacenaron {cantidad_ingreso} unidades en el Galpón {galpon_destino.id_galpon}.")
-        else:
-            st.sidebar.error(f"⚠️ Capacidad insuficiente en Galpón {galpon_destino.id_galpon}. Disponible: {galpon_destino.espacio_disponible()} unds.")
+    galpon_destino = galpones[id_galpon_destino - 1]
+    
+    # Alerta si se guarda un producto en un galpón asignado a otra categoría
+    if galpon_destino.categoria != producto_ingreso:
+        st.sidebar.warning(f"⚠️ Alerta de Mezcla: Guardando '{producto_ingreso}' en un galpón destinado a '{galpon_destino.categoria}'.")
+
+    if galpon_destino.almacenar(cantidad_ingreso):
+        st.sidebar.success(f"✅ Éxito: Se alojaron {cantidad_ingreso} unds de '{producto_ingreso}' en el Galpón {galpon_destino.id_galpon}.")
+    else:
+        st.sidebar.error(f"⚠️ Capacidad insuficiente en Galpón {galpon_destino.id_galpon}. Disponible: {galpon_destino.espacio_disponible()} unds.")
 
 if st.sidebar.button("🔄 Reiniciar Ocupación (Vaciar CEDIS)"):
     for g in galpones:
@@ -98,33 +108,70 @@ columnas = [col1, col2, col3, col4]
 for i, g in enumerate(galpones):
     with columnas[i]:
         st.markdown(f"### Galpón {g.id_galpon}")
-        st.caption(f"**Categoría:** {g.categoria}")
+        st.caption(f"**Uso Principal:** {g.categoria}")
         porcentaje = (g.ocupacion_actual / g.capacidad_max) if g.capacidad_max > 0 else 0.0
-        # Asegurar tope visual del 100%
         porcentaje = min(1.0, porcentaje) 
         st.metric(label="Ocupación", value=f"{g.ocupacion_actual} / {g.capacidad_max} unds")
         st.progress(porcentaje)
 
 st.markdown("---")
 
-# Nuevas Solicitudes organizadas en Pestañas (Tabs)
-tab1, tab2, tab3 = st.tabs(["🔍 Consulta Individual", "⚙️ Configurar Capacidad de Galpones", "📈 Tabla General"])
+# Pestañas de Trabajo Organizadas (Añadida Pestaña de Ubicaciones)
+tab1, tab2, tab3, tab4 = st.tabs(["🔍 Consulta Individual", "📍 Ubicaciones Físicas y Teóricas", "⚙️ Configurar Capacidad", "📈 Tabla General"])
 
 with tab1:
     st.subheader("🔍 Inspección Detallada por Galpón")
     id_elegido = st.selectbox("Seleccione el Galpón que desea auditar:", [1, 2, 3, 4], key="inspeccion")
     g_seleccionado = galpones[id_elegido - 1]
     
-    # KPIs grandes e individuales
     c1, c2, c3 = st.columns(3)
     c1.metric("Unidades Almacenadas", f"{g_seleccionado.ocupacion_actual} unds")
     c2.metric("Capacidad Total Asignada", f"{g_seleccionado.capacidad_max} unds")
-    c3.metric("Espacio Disponible Inmediato", f"{g_seleccionado.espacio_disponible()} unds", delta=f"{g_seleccionado.espacio_disponible()} libres", delta_color="inverse")
+    c3.metric("Espacio Disponible Inmediato", f"{g_seleccionado.espacio_disponible()} unds")
 
 with tab2:
-    st.subheader("⚙️ Optimización de Infraestructura")
-    st.markdown("Modifique los techos límites de almacenamiento o reasigne categorías si la estrategia de distribución cambia.")
+    st.subheader("📍 Layout de Ubicaciones en Racks (Físico vs Teórico)")
+    st.markdown("Visualización volumétrica del espacio disponible. Cada celda representa una **posición física (Pallet/Rack)**.")
     
+    id_layout = st.selectbox("Seleccione el Galpón para ver el mapa de calor:", [1, 2, 3, 4], key="layout_select")
+    g_layout = galpones[id_layout - 1]
+    
+    # Cálculo Teórico
+    total_posiciones = g_layout.filas * g_layout.columnas
+    factor_conversion = g_layout.capacidad_max / total_posiciones
+    posiciones_ocupadas_teoricas = int(g_layout.ocupacion_actual / factor_conversion) if factor_conversion > 0 else 0
+    
+    # Métricas de la pestaña
+    mc1, mc2, mc3 = st.columns(3)
+    mc1.metric("Total de Posiciones Físicas", f"{total_posiciones} Racks")
+    mc2.metric("Posiciones Ocupadas (Teorico)", f"{posiciones_ocupadas_teoricas} Racks")
+    mc3.metric("Posiciones Libres", f"{total_posiciones - posiciones_ocupadas_teoricas} Racks")
+    
+    st.markdown("#### 🗺️ Mapa de Distribución en Planta")
+    
+    # Crear la matriz visual
+    mapa = np.zeros(total_posiciones)
+    mapa[:posiciones_ocupadas_teoricas] = 1  # 1 = Ocupado
+    # Desordenar un poco para simular almacenamiento físico real no perfecto
+    np.random.seed(id_layout) 
+    np.random.shuffle(mapa)
+    mapa_2d = mapa.reshape(g_layout.filas, g_layout.columnas)
+    
+    # Dibujar el Layout con HTML/CSS nativo de Streamlit para máxima velocidad
+    html_grid = "<div style='display: grid; grid-template-columns: repeat("+str(g_layout.columnas)+", 1fr); gap: 5px;'>"
+    for f in range(g_layout.filas):
+        for c in range(g_layout.columnas):
+            estado = mapa_2d[f, c]
+            color = "#EF4444" if estado == 1 else "#10B981" # Rojo ocupado, Verde libre
+            codigo_ubicacion = f"R{f+1}-C{c+1}"
+            html_grid += f"<div style='background-color: {color}; color: white; padding: 10px 2px; text-align: center; border-radius: 4px; font-size: 11px; font-weight: bold;' title='Ubicación: {codigo_ubicacion}'>{codigo_ubicacion}</div>"
+    html_grid += "</div>"
+    
+    st.markdown(html_grid, unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; margin-top: 10px;'><span style='color: #10B981;'>■</span> Disponible &nbsp;&nbsp;&nbsp;&nbsp; <span style='color: #EF4444;'>■</span> Ocupado (Slot Asignado)</p>", unsafe_allow_html=True)
+
+with tab3:
+    st.subheader("⚙️ Optimización de Infraestructura")
     id_modificar = st.selectbox("Seleccione el Galpón a actualizar:", [1, 2, 3, 4], key="config")
     g_a_modificar = galpones[id_modificar - 1]
     
@@ -137,10 +184,10 @@ with tab2:
     if st.button("💾 Aplicar y Actualizar Galpón"):
         g_a_modificar.categoria = nueva_categoria
         g_a_modificar.capacidad_max = nueva_capacidad
-        st.success(f"⚙️ ¡Galpón {id_modificar} actualizado con éxito! Los cambios ya se reflejan en el monitor superior.")
+        st.success(f"⚙️ ¡Galpón {id_modificar} actualizado con éxito!")
         st.rerun()
 
-with tab3:
+with tab4:
     st.subheader("📊 Cuadro de Mando Consolidado")
     data = {
         "Galpón": [f"Galpón {g.id_galpon}" for g in galpones],
