@@ -3,9 +3,9 @@ import pandas as pd
 import numpy as np
 
 # Configuración de la página web
-st.set_page_config(page_title="Simulador Logístico CEDIS con Privilegios", layout="wide")
+st.set_page_config(page_title="Simulador Logístico CEDIS", layout="wide")
 
-# --- 1. BASE DE DATOS DE USUARIOS (SESSION STATE) ---
+# --- 1. BASE DE DATOS DE USUARIOS ---
 if "usuarios_db" not in st.session_state:
     st.session_state["usuarios_db"] = {
         "admin@cedis.com": {"nombre": "Administrador Master", "password": "admin", "rol": "Master", "permiso_modificar": True},
@@ -74,206 +74,157 @@ class Galpon:
                     colocado += 1
         return True, f"Se almacenaron {colocados} unidades automáticamente."
 
-# Inicialización persistente de galpones
-if "galpones_init" not in st.session_state:
-    st.session_state["galpones_init"] = [
+# Inicialización segura de galpones
+if "galpones_lista" not in st.session_state:
+    st.session_state["galpones_lista"] = [
         Galpon(1, "Línea Blanca", 500, filas=10, columnas=10),
         Galpon(2, "Televisores y Audio", 800, filas=10, columnas=10),
         Galpon(3, "Pequeños Electrodomésticos", 1200, filas=10, columnas=10),
         Galpon(4, "Tecnología y Gadgets", 1000, filas=10, columnas=10)
     ]
-galpones = st.session_state["galpones_init"]
+galpones = st.session_state["galpones_lista"]
 
-# --- 3. CONTROL DE PANTALLAS PRINCIPALES ---
+# --- 3. PROCESAMIENTO DE AUTENTICACIÓN ---
 if st.session_state["usuario_autenticado"] is None:
-    # Formulario estricto de login para evitar el "Efecto Tenue" en Streamlit Cloud
-    st.markdown("<h2 style='text-align: center; margin-top: 50px;'>🔐 Acceso al Sistema WMS - CEDIS</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; margin-top: 30px;'>🔐 Acceso al Sistema WMS - CEDIS</h2>", unsafe_allow_html=True)
     
-    col_login_1, col_login_2, col_login_3 = st.columns([1, 1.5, 1])
-    with col_login_2:
-        with st.form(key="login_form_cloud"):
-            correo_input = st.text_input("Correo electrónico Corporativo:", key="input_email_clean")
-            password_input = st.text_input("Contraseña:", type="password", key="input_pass_clean")
-            submit_login = st.form_submit_button("Ingresar al Sistema", use_container_width=True)
-            
-            if submit_login:
-                db = st.session_state["usuarios_db"]
-                if correo_input in db and db[correo_input]["password"] == password_input:
-                    st.session_state["usuario_autenticado"] = correo_input
-                    st.rerun()
-                else:
-                    st.error("Credenciales incorrectas. Verifique e intente nuevamente.")
+    _, col_login, _ = st.columns([1, 1.5, 1])
+    with col_login:
+        # Usamos inputs independientes fuera de un 'form' complejo para evitar bloqueos de hilos en la nube
+        correo_form = st.text_input("Correo electrónico Corporativo:", key="u_email")
+        pass_form = st.text_input("Contraseña:", type="password", key="u_pass")
+        
+        if st.button("🚀 Ingresar al Sistema", use_container_width=True, key="btn_entrar"):
+            db = st.session_state["usuarios_db"]
+            if correo_form in db and db[correo_form]["password"] == pass_form:
+                st.session_state["usuario_autenticado"] = correo_form
+                st.rerun()
+            else:
+                st.error("❌ Credenciales incorrectas.")
 else:
-    # --- 4. INTERFAZ DE LA APP PRINCIPAL (LOGUEADO) ---
-    user_actual_info = st.session_state["usuarios_db"][st.session_state["usuario_autenticado"]]
+    # --- 4. PANEL PRINCIPAL (USUARIO LOGUEADO) ---
+    user_info = st.session_state["usuarios_db"][st.session_state["usuario_autenticado"]]
 
-    # Barra Superior de Información y Cierre de Sesión
-    col_sup1, col_sup2 = st.columns([4, 1])
-    with col_sup2:
-        st.markdown(f"👤 **{user_actual_info['nombre']}** <br><small>Rol: {user_actual_info['rol']}</small>", unsafe_allow_html=True)
+    # Cabecera de usuario
+    c_tit, c_user = st.columns([4, 1])
+    with c_user:
+        st.markdown(f"👤 **{user_info['nombre']}**<br><small>{user_info['rol']}</small>", unsafe_allow_html=True)
         if st.button("🚪 Cerrar Sesión", use_container_width=True, key="btn_logout"):
             st.session_state["usuario_autenticado"] = None
             st.rerun()
 
     st.title("🚢 Sistema de Simulación de Importaciones y CEDIS")
-    st.markdown("Gestione el ingreso de mercancía, configure la infraestructura y monitoree los galpones en tiempo real.")
-
-    # --- PANEL LATERAL CON RESTRICCIONES ---
+    
+    # --- INTERFAZ DEL PANEL LATERAL ---
     st.sidebar.header("📥 Entrada de Importaciones")
-
-    if not user_actual_info["permiso_modificar"]:
-        st.sidebar.warning("⚠️ Tu usuario solo tiene permisos de **LECTURA**. No puedes alterar el inventario.")
+    if not user_info["permiso_modificar"]:
+        st.sidebar.warning("⚠️ Tu usuario es de solo LECTURA.")
     else:
-        categorias_existentes = ["Línea Blanca", "Televisores y Audio", "Pequeños Electrodomésticos", "Tecnología y Gadgets"]
-        producto_ingreso = st.sidebar.selectbox("1. Tipo de producto que ingresa:", categorias_existentes, key="sb_prod")
-
-        lista_galpones_nombres = [f"Galpón {g.id_galpon} ({g.categoria})" for g in galpones]
-        galpon_seleccionado_nombre = st.sidebar.selectbox("2. Destino de Almacenamiento:", lista_galpones_nombres, key="sb_galp")
-        id_galpon_destino = int(galpon_seleccionado_nombre.split(" ")[1])
-        g_destino = galpones[id_galpon_destino - 1]
-
-        cantidad_ingreso = st.sidebar.number_input("3. Cantidad de unidades:", min_value=1, max_value=2000, value=150, key="num_cant")
-        modo_ubicacion = st.sidebar.radio("4. Modo de asignación de ubicación:", ["Automática (Sugerida WMS)", "Manual (Seleccionar Coordenadas)"], key="rd_modo")
-
+        cat_seleccionada = st.sidebar.selectbox("1. Tipo de producto:", ["Línea Blanca", "Televisores y Audio", "Pequeños Electrodomésticos", "Tecnología y Gadgets"])
+        nombres_g = [f"Galpón {g.id_galpon} ({g.categoria})" for g in galpones]
+        g_seleccionado_txt = st.sidebar.selectbox("2. Destino de Almacenamiento:", nombres_g)
+        idx_g = int(g_seleccionado_txt.split(" ")[1]) - 1
+        g_target = galpones[idx_g]
+        
+        cant_ingreso = st.sidebar.number_input("3. Cantidad de unidades:", min_value=1, max_value=2000, value=150)
+        modo_ub = st.sidebar.radio("4. Asignación de ubicación:", ["Automática (Sugerida WMS)", "Manual (Coordenadas)"])
+        
         f_idx, c_idx = 0, 0
-        if modo_ubicacion == "Manual (Seleccionar Coordenadas)":
-            col_lateral1, col_lateral2 = st.sidebar.columns(2)
-            with col_lateral1:
-                fila_elegida = st.selectbox("Rack (Fila):", [f"R{i+1}" for i in range(g_destino.filas)], key="sb_fila")
-                f_idx = int(fila_elegida[1:]) - 1
-            with col_lateral2:
-                col_elegida = st.selectbox("Slot (Col):", [f"C{i+1}" for i in range(g_destino.columnas)], key="sb_col")
-                c_idx = int(col_elegida[1:]) - 1
+        if modo_ub == "Manual (Coordenadas)":
+            col_l1, col_l2 = st.sidebar.columns(2)
+            with col_l1:
+                f_txt = st.selectbox("Rack (Fila):", [f"R{i+1}" for i in range(g_target.filas)])
+                f_idx = int(f_txt[1:]) - 1
+            with col_l2:
+                c_txt = st.selectbox("Slot (Col):", [f"C{i+1}" for i in range(g_target.columnas)])
+                c_idx = int(c_txt[1:]) - 1
 
-        if st.sidebar.button("Simular Desembarco y Almacenaje", key="btn_simular"):
-            if g_destino.categoria != producto_ingreso:
-                st.sidebar.error(f"❌ Error de Zonificación: No puedes ingresar {producto_ingreso} en el {galpon_seleccionado_nombre}.")
+        if st.sidebar.button("Simular Almacenaje", use_container_width=True):
+            if g_target.categoria != cat_seleccionada:
+                st.sidebar.error("❌ Error de Zonificación.")
             else:
-                if modo_ubicacion == "Automática (Sugerida WMS)":
-                    slots_a_ocupar = max(1, int(cantidad_ingreso / (g_destino.capacidad_max / (g_destino.filas * g_destino.columnas))))
-                    exito, msg = g_destino.almacenamiento_automatico(producto_ingreso, slots_a_ocupar)
-                    if exito:
-                        st.sidebar.success(f"✅ Éxito: Almacenadas {cantidad_ingreso} unds en Galpón {g_destino.id_galpon}.")
-                        st.rerun()
-                    else: st.sidebar.error(f"⚠️ {msg}")
+                if modo_ub == "Automática (Sugerida WMS)":
+                    slots = max(1, int(cant_ingreso / (g_target.capacidad_max / (g_target.filas * g_target.columnas))))
+                    exito, m = g_target.almacenamiento_automatico(cat_seleccionada, slots)
                 else:
-                    exito, msg = g_destino.almacenar_en_posicion(f_idx, c_idx, producto_ingreso)
-                    if exito:
-                        st.sidebar.success(f"✅ Slot {fila_elegida}-{col_elegida} asignado.")
-                        st.rerun()
-                    else: st.sidebar.error(f"⚠️ {msg}")
+                    exito, m = g_target.almacenar_en_posicion(f_idx, c_idx, cat_seleccionada)
+                if exito: st.rerun()
+                else: st.sidebar.error(m)
 
-    if user_actual_info["rol"] == "Master":
-        if st.sidebar.button("🔄 Reiniciar Ocupación (Vaciar CEDIS)", key="btn_reset_all"):
-            for g in galpones:
-                st.session_state[f"mapa_{g.id_galpon}"] = np.full((g.filas, g.columnas), "Disponible", dtype=object)
-            st.rerun()
-
-    # --- MONITOR SUPERIOR (VISUALIZACIÓN GENERAL) ---
+    # --- INDICADORES VISUALES SUPERIORES ---
     st.subheader("📊 Estado Actual de los Galpones")
-    col1, col2, col3, col4 = st.columns(4)
-    columnas = [col1, col2, col3, col4]
-
-    for i, g in enumerate(galpones):
-        with columnas[i]:
+    columnas_g = st.columns(4)
+    for idx, g in enumerate(galpones):
+        with columnas_g[idx]:
             st.markdown(f"### Galpón {g.id_galpon}")
-            st.caption(f"**Uso Principal:** {g.categoria}")
-            total_slots = g.filas * g.columnas
-            porcentaje_ocupacion = g.ocupacion_actual / total_slots
-            unidades_calculadas = int(porcentaje_ocupacion * g.capacidad_max)
-            st.metric(label="Ocupación", value=f"{unidades_calculadas} / {g.capacidad_max} unds")
-            st.progress(min(1.0, porcentaje_ocupacion))
+            st.caption(f"**Uso:** {g.categoria}")
+            pct = g.ocupacion_actual / (g.filas * g.columnas)
+            unds_calc = int(pct * g.capacidad_max)
+            st.metric("Ocupación", f"{unds_calc} / {g.capacidad_max} unds")
+            st.progress(min(1.0, pct))
 
     st.markdown("---")
 
-    # --- PESTAÑAS DE TRABAJO ---
-    if user_actual_info["rol"] == "Master":
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔍 Consulta Individual", "📍 Ubicaciones Físicas y Teóricas", "⚙️ Configurar Capacidad", "📈 Tabla General", "🔑 Control de Usuarios (Master)"])
+    # --- SECCIÓN DE PESTAÑAS (TABS) ---
+    if user_info["rol"] == "Master":
+        t1, t2, t3, t4, t5 = st.tabs(["🔍 Consulta", "📍 Ubicaciones", "⚙️ Capacidad", "📈 Tabla General", "🔑 Control de Usuarios"])
     else:
-        tab1, tab2, tab3, tab4 = st.tabs(["🔍 Consulta Individual", "📍 Ubicaciones Físicas y Teóricas", "⚙️ Configurar Capacidad", "📈 Tabla General"])
-        tab5 = None
+        t1, t2, t3, t4 = st.tabs(["🔍 Consulta", "📍 Ubicaciones", "⚙️ Capacidad", "📈 Tabla General"])
+        t5 = None
 
-    with tab1:
-        st.subheader("🔍 Inspección Detallada por Galpón")
-        id_elegido = st.selectbox("Seleccione el Galpón que desea auditar:", [1, 2, 3, 4], key="inspeccion")
-        g_seleccionado = galpones[id_elegido - 1]
-        u_sel = int((g_seleccionado.ocupacion_actual / (g_seleccionado.filas * g_seleccionado.columnas)) * g_seleccionado.capacidad_max)
+    with t1:
+        id_auditar = st.selectbox("Auditar Galpón:", [1,2,3,4], key="audit")
+        g_aud = galpones[id_auditar-1]
+        u_aud = int((g_aud.ocupacion_actual / (g_aud.filas * g_aud.columnas)) * g_aud.capacidad_max)
         c1, c2, c3 = st.columns(3)
-        c1.metric("Unidades Almacenadas", f"{u_sel} unds")
-        c2.metric("Capacidad Total Asignada", f"{g_seleccionado.capacidad_max} unds")
-        c3.metric("Espacio Disponible Inmediato", f"{g_seleccionado.capacidad_max - u_sel} unds")
+        c1.metric("Almacenado", f"{u_aud} unds")
+        c2.metric("Capacidad Max", f"{g_aud.capacidad_max} unds")
+        c3.metric("Disponible", f"{g_aud.capacidad_max - u_aud} unds")
 
-    with tab2:
-        st.subheader("📍 Layout de Ubicaciones en Planta")
-        id_layout = st.selectbox("Seleccione el Galpón para ver el mapa:", [1, 2, 3, 4], key="layout_select")
-        g_layout = galpones[id_layout - 1]
-        
-        html_grid = "<div style='display: grid; grid-template-columns: repeat("+str(g_layout.columnas)+", 1fr); gap: 5px;'>"
-        for f in range(g_layout.filas):
-            for c in range(g_layout.columnas):
-                contenido = g_layout.mapa_racks[f, c]
-                color = "#EF4444" if contenido != "Disponible" else "#10B981"
-                html_grid += f"<div style='background-color: {color}; color: white; padding: 10px 2px; text-align: center; border-radius: 4px; font-size: 11px; font-weight: bold;'>R{f+1}-C{c+1}</div>"
-        html_grid += "</div>"
-        st.markdown(html_grid, unsafe_allow_html=True)
+    with t2:
+        id_lay = st.selectbox("Ver mapa de Racks:", [1,2,3,4], key="lay")
+        g_lay = galpones[id_lay-1]
+        grid_html = "<div style='display: grid; grid-template-columns: repeat("+str(g_lay.columnas)+", 1fr); gap: 4px;'> "
+        for f in range(g_lay.filas):
+            for c in range(g_lay.columnas):
+                color = "#EF4444" if g_lay.mapa_racks[f,c] != "Disponible" else "#10B981"
+                grid_html += f"<div style='background-color: {color}; color: white; text-align: center; font-size: 10px; padding: 8px 0; border-radius: 3px;'>R{f+1}</div>"
+        grid_html += "</div>"
+        st.markdown(grid_html, unsafe_allow_html=True)
 
-    with tab3:
-        st.subheader("⚙️ Optimización de Infraestructura")
-        if not user_actual_info["permiso_modificar"]:
-            st.error("🚫 No tienes privilegios para reconfigurar el CEDIS.")
+    with t3:
+        if not user_info["permiso_modificar"]: st.error("No tienes permisos.")
         else:
-            id_modificar = st.selectbox("Seleccione el Galpón a actualizar:", [1, 2, 3, 4], key="config")
-            g_a_modificar = galpones[id_modificar - 1]
-            col_in1, col_in2 = st.columns(2)
-            with col_in1: nueva_categoria = st.text_input("Editar Categoría:", value=g_a_modificar.categoria, key="txt_edit_cat")
-            with col_in2: nueva_capacidad = st.number_input("Nueva Capacidad Máxima:", min_value=100, max_value=5000, value=g_a_modificar.capacidad_max, key="num_edit_cap")
-                
-            if st.button("💾 Aplicar y Actualizar Galpón", key="btn_save_infra"):
-                g_a_modificar.categoria = nueva_categoria
-                g_a_modificar.capacidad_max = nueva_capacidad
-                st.success("⚙️ Configuración de infraestructura guardada.")
+            id_mod = st.selectbox("Configurar Galpón:", [1,2,3,4], key="mod_inf")
+            g_mod = galpones[id_mod-1]
+            n_cat = st.text_input("Nueva Categoría:", value=g_mod.categoria)
+            n_cap = st.number_input("Nueva Capacidad:", value=g_mod.capacidad_max)
+            if st.button("Guardar Cambios"):
+                g_mod.categoria = n_cat
+                g_mod.capacidad_max = n_cap
+                st.success("Guardado.")
                 st.rerun()
 
-    with tab4:
-        st.subheader("📊 Cuadro de Mando Consolidado")
-        unidades_totales = [int((g.ocupacion_actual / (g.filas * g.columnas)) * g.capacidad_max) for g in galpones]
-        data = {"Galpón": [f"Galpón {g.id_galpon}" for g in galpones], "Categoría": [g.categoria for g in galpones], "Capacidad Máxima": [g.capacidad_max for g in galpones], "Ocupación": unidades_totales}
-        st.dataframe(pd.DataFrame(data), use_container_width=True)
+    with t4:
+        uds_tot = [int((g.ocupacion_actual / (g.filas * g.columnas)) * g.capacidad_max) for g in galpones]
+        df = pd.DataFrame({"Galpón": [f"Galpón {g.id_galpon}" for g in galpones], "Categoría": [g.categoria for g in galpones], "Capacidad": [g.capacidad_max for g in galpones], "Ocupación": uds_tot})
+        st.dataframe(df, use_container_width=True)
 
-    if tab5 is not None:
-        with tab5:
-            st.subheader("🔑 Consola de Administración de Credenciales y Permisos")
+    if t5 is not None:
+        with t5:
+            st.subheader("🔑 Gestión de Usuarios (Master)")
+            user_sel = st.selectbox("Seleccionar usuario a editar:", list(st.session_state["usuarios_db"].keys()))
+            u_data = st.session_state["usuarios_db"][user_sel]
             
-            usuarios_lista = []
-            for correo, info in st.session_state["usuarios_db"].items():
-                usuarios_lista.append({
-                    "Correo / Usuario": correo,
-                    "Nombre Completo": info["nombre"],
-                    "Contraseña": info["password"],
-                    "Rol de Sistema": info["rol"],
-                    "Permiso de Escritura": "✅ SI" if info["permiso_modificar"] else "❌ NO"
-                })
-            st.dataframe(pd.DataFrame(usuarios_lista), use_container_width=True)
-            
-            st.markdown("---")
-            st.markdown("#### 🛠️ Modificar un Usuario Existente")
-            
-            user_a_editar = st.selectbox("Seleccione el usuario a gestionar:", list(st.session_state["usuarios_db"].keys()), key="sb_user_manage")
-            info_user = st.session_state["usuarios_db"][user_a_editar]
-            
-            c_mod1, c_mod2, c_mod3 = st.columns(3)
-            with c_mod1: nuevo_nombre = st.text_input("Editar Nombre:", value=info_user["nombre"], key="txt_edit_unombre")
-            with c_mod2: nueva_pass = st.text_input("Modificar Contraseña:", value=info_user["password"], key="txt_edit_upass")
-            with c_mod3: nuevo_rol = st.selectbox("Cambiar Rol:", ["Operador", "Master"], index=0 if info_user["rol"] == "Operador" else 1, key="sb_edit_urol")
+            col_u1, col_u2 = st.columns(2)
+            with col_u1:
+                n_name = st.text_input("Nombre:", value=u_data["nombre"])
+                n_role = st.selectbox("Rol:", ["Operador", "Master"], index=0 if u_data["rol"] == "Operador" else 1)
+            with col_u2:
+                n_pass = st.text_input("Contraseña:", value=u_data["password"])
+                n_perm = st.checkbox("Permiso de Escritura", value=u_data["permiso_modificar"])
                 
-            permiso_check = st.checkbox("Habilitar Permiso de Modificación", value=info_user["permiso_modificar"], key="chk_edit_uperm")
-            
-            if st.button("💾 Guardar Cambios de Credenciales", key="btn_save_user"):
-                st.session_state["usuarios_db"][user_a_editar] = {
-                    "nombre": nuevo_nombre,
-                    "password": nueva_pass,
-                    "rol": nuevo_rol,
-                    "permiso_modificar": permiso_check if nuevo_rol == "Operador" else True
-                }
-                st.success(f"¡Usuario {user_a_editar} actualizado!")
+            if st.button("Actualizar Credenciales"):
+                st.session_state["usuarios_db"][user_sel] = {"nombre": n_name, "password": n_pass, "rol": n_role, "permiso_modificar": n_perm if n_role == "Operador" else True}
+                st.success("Usuario actualizado.")
                 st.rerun()
