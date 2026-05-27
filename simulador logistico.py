@@ -5,13 +5,18 @@ import numpy as np
 # Configuración de la página web
 st.set_page_config(page_title="Simulador Logístico CEDIS", layout="wide")
 
-# --- 1. BASE DE DATOS DE USUARIOS ---
-if "usuarios_db" not in st.session_state:
-    st.session_state["usuarios_db"] = {
+# --- 1. BASE DE DATOS GLOBAL COMPARTIDA (PARA CONFIRMACIÓN MULTI-PC) ---
+# st.cache_resource hace que este diccionario sea ÚNICO y compartido por todas las PCs que se conecten
+@st.cache_resource
+def inicializar_base_datos_global():
+    return {
         "admin@cedis.com": {"nombre": "Administrador Master", "password": "admin", "rol": "Master", "permiso_modificar": True},
         "operador1@cedis.com": {"nombre": "Juan Pérez", "password": "123", "rol": "Operador", "permiso_modificar": True},
         "operador2@cedis.com": {"nombre": "María López", "password": "456", "rol": "Operador", "permiso_modificar": False}
     }
+
+# Asignamos la DB global compartida
+usuarios_db_global = inicializar_base_datos_global()
 
 if "usuario_autenticado" not in st.session_state:
     st.session_state["usuario_autenticado"] = None
@@ -74,7 +79,6 @@ class Galpon:
                     colocado += 1
         return True, f"Se almacenaron {colocados} unidades automáticamente."
 
-# Inicialización segura de galpones
 if "galpones_lista" not in st.session_state:
     st.session_state["galpones_lista"] = [
         Galpon(1, "Línea Blanca", 500, filas=10, columnas=10),
@@ -90,20 +94,18 @@ if st.session_state["usuario_autenticado"] is None:
     
     _, col_login, _ = st.columns([1, 1.5, 1])
     with col_login:
-        # Usamos inputs independientes fuera de un 'form' complejo para evitar bloqueos de hilos en la nube
         correo_form = st.text_input("Correo electrónico Corporativo:", key="u_email")
         pass_form = st.text_input("Contraseña:", type="password", key="u_pass")
         
         if st.button("🚀 Ingresar al Sistema", use_container_width=True, key="btn_entrar"):
-            db = st.session_state["usuarios_db"]
-            if correo_form in db and db[correo_form]["password"] == pass_form:
+            if correo_form in usuarios_db_global and usuarios_db_global[correo_form]["password"] == pass_form:
                 st.session_state["usuario_autenticado"] = correo_form
                 st.rerun()
             else:
                 st.error("❌ Credenciales incorrectas.")
 else:
     # --- 4. PANEL PRINCIPAL (USUARIO LOGUEADO) ---
-    user_info = st.session_state["usuarios_db"][st.session_state["usuario_autenticado"]]
+    user_info = usuarios_db_global[st.session_state["usuario_autenticado"]]
 
     # Cabecera de usuario
     c_tit, c_user = st.columns([4, 1])
@@ -213,18 +215,59 @@ else:
     if t5 is not None:
         with t5:
             st.subheader("🔑 Gestión de Usuarios (Master)")
-            user_sel = st.selectbox("Seleccionar usuario a editar:", list(st.session_state["usuarios_db"].keys()))
-            u_data = st.session_state["usuarios_db"][user_sel]
+            
+            # Mostrar tabla en tiempo real de los datos del servidor
+            usuarios_lista = []
+            for correo, info in usuarios_db_global.items():
+                usuarios_lista.append({
+                    "Usuario (Correo)": correo,
+                    "Nombre Completo": info["nombre"],
+                    "Contraseña Activa": info["password"],
+                    "Rol": info["rol"],
+                    "Acceso Escritura": "✅ SI" if info["permiso_modificar"] else "❌ NO"
+                })
+            st.dataframe(pd.DataFrame(usuarios_lista), use_container_width=True)
+            
+            st.markdown("---")
+            st.markdown("#### 🛠️ Modificar Credenciales de un Usuario")
+            
+            user_sel = st.selectbox("Seleccionar usuario a editar:", list(usuarios_db_global.keys()))
+            u_data = usuarios_db_global[user_sel]
             
             col_u1, col_u2 = st.columns(2)
             with col_u1:
-                n_name = st.text_input("Nombre:", value=u_data["nombre"])
-                n_role = st.selectbox("Rol:", ["Operador", "Master"], index=0 if u_data["rol"] == "Operador" else 1)
+                n_name = st.text_input("Nombre Completo:", value=u_data["nombre"], key="input_n_name")
+                n_role = st.selectbox("Rol del Sistema:", ["Operador", "Master"], index=0 if u_data["rol"] == "Operador" else 1, key="input_n_role")
             with col_u2:
-                n_pass = st.text_input("Contraseña:", value=u_data["password"])
-                n_perm = st.checkbox("Permiso de Escritura", value=u_data["permiso_modificar"])
+                n_pass = st.text_input("Contraseña de Acceso:", value=u_data["password"], key="input_n_pass")
+                n_perm = st.checkbox("Habilitar Permiso de Escritura", value=u_data["permiso_modificar"], key="input_n_perm")
+            
+            # --- VENTANA MODAL (DIALOG) DE CONFIRMACIÓN ---
+            @st.dialog("⚠️ Confirmar Actualización de Credenciales")
+            def confirmar_cambio_modal(usuario, nombre, clave, rol, permiso):
+                st.warning(f"¿Está seguro de que desea aplicar estos cambios globales para **{usuario}**?")
+                st.write(f"• **Nombre:** {nombre}")
+                st.write(f"• **Contraseña:** {clave}")
+                st.write(f"• **Rol:** {rol}")
+                st.write(f"• **Escritura:** {'Permitido' if permiso else 'Denegado'}")
+                st.markdown("<small><i>Este cambio desconectará o actualizará el acceso del usuario inmediatamente en cualquier PC.</i></small>", unsafe_allow_html=True)
                 
-            if st.button("Actualizar Credenciales"):
-                st.session_state["usuarios_db"][user_sel] = {"nombre": n_name, "password": n_pass, "rol": n_role, "permiso_modificar": n_perm if n_role == "Operador" else True}
-                st.success("Usuario actualizado.")
-                st.rerun()
+                c_btn1, c_btn2 = st.columns(2)
+                with c_btn1:
+                    if st.button("✅ Sí, Guardar Cambios", use_container_width=True):
+                        # Guardamos en la base de datos compartida del servidor
+                        usuarios_db_global[usuario] = {
+                            "nombre": nombre,
+                            "password": clave,
+                            "rol": rol,
+                            "permiso_modificar": permiso if rol == "Operador" else True
+                        }
+                        st.toast("¡Usuario guardado en el servidor global!", icon="💾")
+                        st.rerun()
+                with c_btn2:
+                    if st.button("❌ Cancelar", use_container_width=True):
+                        st.rerun()
+
+            # Botón principal que abre la ventana flotante
+            if st.button("🔄 Actualizar Credenciales", use_container_width=True, type="primary"):
+                confirmar_cambio_modal(user_sel, n_name, n_pass, n_role, n_perm)
