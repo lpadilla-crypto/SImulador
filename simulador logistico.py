@@ -5,8 +5,10 @@ import numpy as np
 # Configuración de la página web
 st.set_page_config(page_title="Simulador Logístico CEDIS", layout="wide")
 
-# --- 1. BASE DE DATOS GLOBAL COMPARTIDA (PARA CONFIRMACIÓN MULTI-PC) ---
-# st.cache_resource hace que este diccionario sea ÚNICO y compartido por todas las PCs que se conecten
+# FACTOR DE CONVERSIÓN: Unidades por Contenedor estándar (TEU)
+UNIDADES_POR_CONTENEDOR = 200
+
+# --- 1. BASE DE DATOS GLOBAL COMPARTIDA ---
 @st.cache_resource
 def inicializar_base_datos_global():
     return {
@@ -15,7 +17,6 @@ def inicializar_base_datos_global():
         "operador2@cedis.com": {"nombre": "María López", "password": "456", "rol": "Operador", "permiso_modificar": False}
     }
 
-# Asignamos la DB global compartida
 usuarios_db_global = inicializar_base_datos_global()
 
 if "usuario_autenticado" not in st.session_state:
@@ -66,18 +67,19 @@ class Galpon:
         self.mapa_racks[fila, columna] = producto
         return True, "Ubicación asignada con éxito."
 
-    def almacenamiento_automatico(self, producto, cantidad):
+    # --- SOLUCIÓN AL BUG DEL TRACEBACK (Línea 77) ---
+    def almacenamiento_automatico(self, producto, cantidad_slots):
         disponibles = self.espacio_disponible()
-        if cantidad > disponibles:
-            return False, f"Capacidad insuficiente. Solo quedan {disponibles} racks libres."
+        if cantidad_slots > disponibles:
+            return False, f"Capacidad insuficiente en racks. Solo quedan {disponibles} slots libres."
         
-        colocados = 0
+        slots_ocupados = 0
         for f in range(self.filas):
             for c in range(self.columnas):
-                if colocado < cantidad and self.mapa_racks[f, c] == "Disponible":
+                if slots_ocupados < cantidad_slots and self.mapa_racks[f, c] == "Disponible":
                     self.mapa_racks[f, c] = producto
-                    colocado += 1
-        return True, f"Se almacenaron {colocados} unidades automáticamente."
+                    slots_ocupados += 1
+        return True, f"Se asignaron {slots_ocupados} slots automáticamente en la matriz."
 
 if "galpones_lista" not in st.session_state:
     st.session_state["galpones_lista"] = [
@@ -117,18 +119,32 @@ else:
 
     st.title("🚢 Sistema de Simulación de Importaciones y CEDIS")
     
-    # --- INTERFAZ DEL PANEL LATERAL ---
+    # --- INTERFAZ DEL PANEL LATERAL: SECCIÓN DE INGRESOS ---
     st.sidebar.header("📥 Entrada de Importaciones")
     if not user_info["permiso_modificar"]:
         st.sidebar.warning("⚠️ Tu usuario es de solo LECTURA.")
     else:
-        cat_seleccionada = st.sidebar.selectbox("1. Tipo de producto:", ["Línea Blanca", "Televisores y Audio", "Pequeños Electrodomésticos", "Tecnología y Gadgets"])
+        cat_seleccionada = st.sidebar.selectbox("1. Tipo de producto que ingresa:", ["Línea Blanca", "Televisores y Audio", "Pequeños Electrodomésticos", "Tecnología y Gadgets"])
+        
         nombres_g = [f"Galpón {g.id_galpon} ({g.categoria})" for g in galpones]
         g_seleccionado_txt = st.sidebar.selectbox("2. Destino de Almacenamiento:", nombres_g)
         idx_g = int(g_seleccionado_txt.split(" ")[1]) - 1
         g_target = galpones[idx_g]
         
-        cant_ingreso = st.sidebar.number_input("3. Cantidad de unidades:", min_value=1, max_value=2000, value=150)
+        # Entrada dual: El usuario puede definir la carga por unidades o calcular por contenedores
+        modo_metrica = st.sidebar.radio("Definir volumen de importación por:", ["Cantidad de Unidades", "Cantidad de Contenedores (TEU)"])
+        
+        if modo_metrica == "Cantidad de Unidades":
+            cant_unidades = st.sidebar.number_input("3. Unidades a ingresar:", min_value=1, max_value=5000, value=200, step=50)
+            # Cálculo de contenedores equivalentes (informativo)
+            calc_contenedores = round(cant_unidades / UNIDADES_POR_CONTENEDOR, 2)
+            st.sidebar.info(f"📦 Equivalente teórico: **{calc_contenedores} Contenedores**")
+        else:
+            cant_contenedores = st.sidebar.number_input("3. Contenedores a desembarcar:", min_value=0.5, max_value=25.0, value=1.0, step=0.5)
+            # Cálculo de unidades equivalentes
+            cant_unidades = int(cant_contenedores * UNIDADES_POR_CONTENEDOR)
+            st.sidebar.info(f"🔢 Equivalente teórico: **{cant_unidades} Unidades**")
+
         modo_ub = st.sidebar.radio("4. Asignación de ubicación:", ["Automática (Sugerida WMS)", "Manual (Coordenadas)"])
         
         f_idx, c_idx = 0, 0
@@ -141,17 +157,24 @@ else:
                 c_txt = st.selectbox("Slot (Col):", [f"C{i+1}" for i in range(g_target.columnas)])
                 c_idx = int(c_txt[1:]) - 1
 
-        if st.sidebar.button("Simular Almacenaje", use_container_width=True):
+        st.sidebar.markdown("---")
+        # BOTÓN DE ACCIÓN PRINCIPAL VISIBLE Y EMITIDO AL FINAL
+        if st.sidebar.button("🚢 EJECUTAR INGRESO AL CEDIS", use_container_width=True, type="primary", key="btn_ejecutar_simulacion"):
             if g_target.categoria != cat_seleccionada:
-                st.sidebar.error("❌ Error de Zonificación.")
+                st.sidebar.error(f"❌ Error de Zonificación: No puedes meter {cat_seleccionada} en el {g_seleccionado_txt}.")
             else:
                 if modo_ub == "Automática (Sugerida WMS)":
-                    slots = max(1, int(cant_ingreso / (g_target.capacidad_max / (g_target.filas * g_target.columnas))))
-                    exito, m = g_target.almacenamiento_automatico(cat_seleccionada, slots)
+                    # Proporción de espacios físicos a ocupar basados en las unidades ingresadas
+                    slots_a_ocupar = max(1, int(cant_unidades / (g_target.capacidad_max / (g_target.filas * g_target.columnas))))
+                    exito, m = g_target.almacenamiento_automatico(cat_seleccionada, slots_a_ocupar)
                 else:
                     exito, m = g_target.almacenar_en_posicion(f_idx, c_idx, cat_seleccionada)
-                if exito: st.rerun()
-                else: st.sidebar.error(m)
+                
+                if exito: 
+                    st.toast(f"¡Ingreso completado! Carga registrada.", icon="✅")
+                    st.rerun()
+                else: 
+                    st.sidebar.error(m)
 
     # --- INDICADORES VISUALES SUPERIORES ---
     st.subheader("📊 Estado Actual de los Galpones")
@@ -162,7 +185,9 @@ else:
             st.caption(f"**Uso:** {g.categoria}")
             pct = g.ocupacion_actual / (g.filas * g.columnas)
             unds_calc = int(pct * g.capacidad_max)
-            st.metric("Ocupación", f"{unds_calc} / {g.capacidad_max} unds")
+            cont_calc = round(unds_calc / UNIDADES_POR_CONTENEDOR, 1)
+            
+            st.metric("Ocupación", f"{unds_calc} / {g.capacidad_max} unds", f"{cont_calc} TEU")
             st.progress(min(1.0, pct))
 
     st.markdown("---")
@@ -179,7 +204,7 @@ else:
         g_aud = galpones[id_auditar-1]
         u_aud = int((g_aud.ocupacion_actual / (g_aud.filas * g_aud.columnas)) * g_aud.capacidad_max)
         c1, c2, c3 = st.columns(3)
-        c1.metric("Almacenado", f"{u_aud} unds")
+        c1.metric("Almacenado", f"{u_aud} unds", f"{round(u_aud/UNIDADES_POR_CONTENEDOR, 1)} Contenedores")
         c2.metric("Capacidad Max", f"{g_aud.capacidad_max} unds")
         c3.metric("Disponible", f"{g_aud.capacidad_max - u_aud} unds")
 
@@ -209,14 +234,19 @@ else:
 
     with t4:
         uds_tot = [int((g.ocupacion_actual / (g.filas * g.columnas)) * g.capacidad_max) for g in galpones]
-        df = pd.DataFrame({"Galpón": [f"Galpón {g.id_galpon}" for g in galpones], "Categoría": [g.categoria for g in galpones], "Capacidad": [g.capacidad_max for g in galpones], "Ocupación": uds_tot})
+        con_tot = [round(u / UNIDADES_POR_CONTENEDOR, 1) for u in uds_tot]
+        df = pd.DataFrame({
+            "Galpón": [f"Galpón {g.id_galpon}" for g in galpones], 
+            "Categoría": [g.categoria for g in galpones], 
+            "Capacidad Max (Unds)": [g.capacidad_max for g in galpones], 
+            "Ocupación (Unidades)": uds_tot,
+            "Ocupación (Contenedores)": con_tot
+        })
         st.dataframe(df, use_container_width=True)
 
     if t5 is not None:
         with t5:
             st.subheader("🔑 Gestión de Usuarios (Master)")
-            
-            # 1. Mostrar tabla en tiempo real de los datos actuales en el servidor
             usuarios_lista = []
             for correo, info in usuarios_db_global.items():
                 usuarios_lista.append({
@@ -231,12 +261,9 @@ else:
             st.markdown("---")
             st.markdown("#### 🛠️ Modificar Credenciales de un Usuario")
             
-            # Selector de usuario
             user_sel = st.selectbox("Seleccionar usuario a editar:", list(usuarios_db_global.keys()), key="selector_master_usuarios")
             u_data = usuarios_db_global[user_sel]
             
-            # IMPORTANTE: Usamos llaves únicas dinámicas usando el correo del usuario seleccionado (f"..._{user_sel}")
-            # Esto evita por completo que la información "se filtre" o se replique a otros usuarios al cambiar el selector.
             col_u1, col_u2 = st.columns(2)
             with col_u1:
                 n_name = st.text_input("Nombre Completo:", value=u_data["nombre"], key=f"name_{user_sel}")
@@ -245,32 +272,16 @@ else:
                 n_pass = st.text_input("Contraseña de Acceso:", value=u_data["password"], key=f"pass_{user_sel}")
                 n_perm = st.checkbox("Habilitar Permiso de Escritura", value=u_data["permiso_modificar"], key=f"perm_{user_sel}")
             
-            # --- VENTANA MODAL (DIALOG) DE CONFIRMACIÓN SEGURA ---
             @st.dialog("⚠️ Confirmar Actualización de Credenciales")
             def confirmar_cambio_modal(usuario, nombre, clave, rol, permiso):
-                st.warning(f"¿Está seguro de que desea aplicar estos cambios globales para **{usuario}**?")
-                st.write(f"• **Nombre:** {nombre}")
-                st.write(f"• **Contraseña:** {clave}")
-                st.write(f"• **Rol:** {rol}")
-                st.write(f"• **Escritura:** {'Permitido' if permiso else 'Denegado'}")
-                st.markdown("<small><i>Este cambio se aplicará de inmediato en cualquier PC conectada.</i></small>", unsafe_allow_html=True)
-                
+                st.warning(f"¿Desea aplicar estos cambios globales para **{usuario}**?")
                 c_btn1, c_btn2 = st.columns(2)
                 with c_btn1:
-                    if st.button("✅ Sí, Guardar Cambios", use_container_width=True, key=f"btn_confirmar_{usuario}"):
-                        # Guardamos de manera aislada y explícita en el diccionario global
-                        usuarios_db_global[usuario] = {
-                            "nombre": str(nombre),
-                            "password": str(clave),
-                            "rol": str(rol),
-                            "permiso_modificar": bool(permiso) if rol == "Operador" else True
-                        }
-                        st.toast("¡Usuario guardado con éxito!", icon="💾")
+                    if st.button("✅ Sí, Guardar", use_container_width=True, key=f"btn_confirmar_{usuario}"):
+                        usuarios_db_global[usuario] = {"nombre": str(nombre), "password": str(clave), "rol": str(rol), "permiso_modificar": bool(permiso) if rol == "Operador" else True}
                         st.rerun()
                 with c_btn2:
-                    if st.button("❌ Cancelar", use_container_width=True, key=f"btn_cancelar_{usuario}"):
-                        st.rerun()
+                    if st.button("❌ Cancelar", use_container_width=True, key=f"btn_cancelar_{usuario}"): st.rerun()
 
-            # Botón principal que abre la ventana flotante
             if st.button("🔄 Actualizar Credenciales", use_container_width=True, type="primary", key=f"btn_trigger_{user_sel}"):
                 confirmar_cambio_modal(user_sel, n_name, n_pass, n_role, n_perm)
